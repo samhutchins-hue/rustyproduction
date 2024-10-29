@@ -1,12 +1,29 @@
+use std::net::TcpListener;
+
+// spawn in background
+fn spawn_app() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind to random port");
+
+    // retrieve port assigned by os's due to 0 port
+    let port = listener.local_addr().unwrap().port();
+    let server = zero2prod::run(listener).expect("Failed to bind address");
+
+    let _ = tokio::spawn(server);
+
+    // return the application address to the caller
+    format!("http://127.0.0.1:{}", port)
+}
+
 #[tokio::test]
 async fn health_check_works() {
     //Arrange
-    spawn_app();
+    let address = spawn_app();
     let client = reqwest::Client::new();
 
     // Act
     let response = client
-        .get("http://127.0.0.1:8000/health_check")
+        // use returned address
+        .get(format!("{}/health_check", address))
         .send()
         .await
         .expect("Failed to execute request.");
@@ -16,11 +33,54 @@ async fn health_check_works() {
     assert_eq!(Some(0), response.content_length());
 }
 
-// launch in background
-fn spawn_app() {
-    let server = zero2prod::run().expect("Failed to bind address");
-    // launch server as a background task
-    // tokio spawn returns a handle to the spawned future,
-    // no use, so _
-    let _ = tokio::spawn(server);
+#[tokio::test]
+async fn subscribe_returns_a_200_for_valid_form_data() {
+    // Arrange
+    let app_address = spawn_app();
+    let client = reqwest::Client::new();
+
+    //Act
+    let body = "name=le%20guin&email=ursula_le_guin%40gmail.com";
+    let response = client
+        .post(&format!("{}/subscriptions", &app_address))
+        .header("Content_Type", "application/x-www-form-urlencoded")
+        .body(body)
+        .send()
+        .await
+        .expect("Failed to execute request.");
+
+    // Assert
+    assert_eq!(200, response.status().as_u16());
+}
+
+#[tokio::test]
+async fn subscribe_returns_a_400_when_data_is_missing() {
+    //Arrange
+    let app_address = spawn_app();
+    let client = reqwest::Client::new();
+    let test_cases = vec![
+        ("name=le%20guin", "missing the email"),
+        ("email=ursula_le_guin%40gmail.com", "missing the name"),
+        ("", "missing both name and email"),
+    ];
+
+    for (invalid_body, error_message) in test_cases {
+        //Act
+        let response = client
+            .post(&format!("{}/subscriptions", &app_address))
+            .header("Content_Type", "application/x-www-form-urlencoded")
+            .body(invalid_body)
+            .send()
+            .await
+            .expect("Failed to execute request");
+
+        // Assert
+        assert_eq!(
+            400,
+            response.status().as_u16(),
+            // Additional customised error message on test failure
+            "The API did not fail with 400 Bad Request when the payload was {}.",
+            error_message
+        );
+    }
 }
